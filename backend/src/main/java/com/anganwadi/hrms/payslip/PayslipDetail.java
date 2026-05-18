@@ -31,9 +31,17 @@ public record PayslipDetail(
 
         // Pay
         BigDecimal regularPay,
+        /** Effective overtime — manualOvertimePay when set, else computed. */
         BigDecimal overtimePay,
+        /** Attendance-computed overtime (always; for transparency). */
+        BigDecimal autoOvertimePay,
+        /** Admin override of overtime; null when no override is set. */
+        BigDecimal manualOvertimePay,
+        BigDecimal bonusAmount,
+        String     bonusNote,
         BigDecimal grossPay,
         BigDecimal deductions,
+        String     deductionNote,
         BigDecimal netPay,
 
         // Rates (per-employee, derived from monthly salary)

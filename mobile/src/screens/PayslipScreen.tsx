@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -13,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 
-import { api, ApiError, PayslipDetail } from '../api/client';
+import { api, ApiError, getApiBaseUrl, loadAuth, PayslipDetail } from '../api/client';
 import { RootStackParamList } from '../navigation/types';
 import { colors, radius, shadow, spacing } from '../theme/tokens';
 import { fmtMoney } from '../lib/format';
@@ -141,6 +142,40 @@ export default function PayslipScreen({ navigation }: Props) {
       setRefreshing(false);
     }
   }, [load, month]);
+
+  /**
+   * Open the server-rendered printable payslip in the system browser. The
+   * page auto-fires the OS print/save-as-PDF dialog on load, so the user
+   * sees the save sheet immediately — no extra taps once they're in the
+   * browser.
+   *
+   * We intentionally skip `Linking.canOpenURL` here: on Android API 30+ it
+   * frequently returns false for http(s) URLs due to package-visibility
+   * restrictions, even though the browser CAN open them. Just call
+   * `openURL` and trust the OS.
+   */
+  const onDownload = useCallback(async () => {
+    try {
+      const auth = await loadAuth();
+      if (!auth) {
+        showToast('Sign in again to download');
+        return;
+      }
+      // Token in query because Linking.openURL navigates without headers.
+      // Allowed only for /payslip/print by JwtAuthFilter. `?download=1`
+      // tells the server to auto-trigger window.print() once the page loads.
+      const url =
+        `${getApiBaseUrl()}/payslip/print` +
+        `?month=${encodeURIComponent(month)}` +
+        `&token=${encodeURIComponent(auth.token)}` +
+        `&download=1`;
+      showToast('Opening payslip — choose Save as PDF…', true);
+      await Linking.openURL(url);
+    } catch (e) {
+      console.warn('[payslip] download failed', e);
+      showToast('Could not open the payslip. Try again from a browser.');
+    }
+  }, [month]);
 
   // When the user picks a different month, clear the displayed slip so the
   // Generate button reappears as the next obvious action.
@@ -372,10 +407,25 @@ export default function PayslipScreen({ navigation }: Props) {
                 <View style={s.lineDivider} />
                 <LineItem
                   dotColor={colors.warning}
-                  label="Overtime pay"
-                  hint={`${Number(slip.overtimeHours).toFixed(2)}h @ 1.5×`}
+                  label={slip.manualOvertimePay != null ? 'Overtime pay (admin set)' : 'Overtime pay'}
+                  hint={
+                    slip.manualOvertimePay != null
+                      ? 'Manually set by admin'
+                      : `${Number(slip.overtimeHours).toFixed(2)}h @ 1.5×`
+                  }
                   amount={fmtMoney(slip.overtimePay, slip.currency)}
                 />
+                {Number(slip.bonusAmount ?? 0) > 0 && (
+                  <>
+                    <View style={s.lineDivider} />
+                    <LineItem
+                      dotColor={colors.success}
+                      label={slip.bonusNote ? `Bonus · ${slip.bonusNote}` : 'Bonus'}
+                      hint="Added by admin"
+                      amount={`+${fmtMoney(slip.bonusAmount ?? 0, slip.currency)}`}
+                    />
+                  </>
+                )}
                 <View style={s.lineTotalDivider} />
                 <View style={s.lineTotalRow}>
                   <Text style={s.lineTotalLabel}>Gross earnings</Text>
@@ -389,12 +439,23 @@ export default function PayslipScreen({ navigation }: Props) {
                   <Text style={s.cardEyebrow}>DEDUCTIONS</Text>
                   <Text style={s.cardLink}>Configured by admin</Text>
                 </View>
-                <View style={s.emptyHint}>
-                  <Text style={s.emptyHintTitle}>No deductions this month</Text>
-                  <Text style={s.emptyHintSub}>
-                    Tax, PF and loan recoveries will appear here when your admin enables them.
-                  </Text>
-                </View>
+                {Number(slip.deductions) > 0 ? (
+                  <>
+                    <LineItem
+                      dotColor={colors.danger}
+                      label={slip.deductionNote ? slip.deductionNote : 'Deductions'}
+                      hint="Total subtractions from gross"
+                      amount={`−${fmtMoney(slip.deductions, slip.currency)}`}
+                    />
+                  </>
+                ) : (
+                  <View style={s.emptyHint}>
+                    <Text style={s.emptyHintTitle}>No deductions this month</Text>
+                    <Text style={s.emptyHintSub}>
+                      Tax, PF and loan recoveries will appear here when your admin enables them.
+                    </Text>
+                  </View>
+                )}
                 <View style={s.lineTotalDivider} />
                 <View style={s.lineTotalRow}>
                   <Text style={s.lineTotalLabel}>Total deductions</Text>
@@ -462,6 +523,21 @@ export default function PayslipScreen({ navigation }: Props) {
                   Computed as monthly ÷ {slip.daysInMonth} days, then ÷ {Number(slip.expectedHours).toFixed(0) === '0' ? 6 : Math.round(Number(slip.expectedHours) / slip.daysInMonth)} hours per day.
                 </Text>
               </View>
+
+              {/* ── Download button ─────────────────────────── */}
+              <Pressable
+                onPress={onDownload}
+                android_ripple={{ color: 'rgba(255,255,255,0.18)' }}
+                style={({ pressed }) => [
+                  s.downloadBtn,
+                  pressed && { transform: [{ translateY: 1 }] },
+                ]}
+              >
+                <Text style={s.downloadBtnText}>↓  Download payslip</Text>
+              </Pressable>
+              <Text style={s.downloadHint}>
+                Opens in your browser. Tap "Save / Print PDF" there to keep a copy.
+              </Text>
 
               {/* ── Meta footer ─────────────────────────────── */}
               <View style={s.meta}>
@@ -710,6 +786,41 @@ const s = StyleSheet.create({
   // Empty state when no slip is loaded
   emptyTitle: { fontSize: 14, fontWeight: '800', color: colors.text, letterSpacing: -0.1 },
   emptySub: { fontSize: 12, color: colors.textMuted, marginTop: 4, textAlign: 'center' },
+
+  // Download payslip button
+  downloadBtn: {
+    marginTop: spacing.md,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: colors.primary,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.30,
+        shadowRadius: 20,
+      },
+      android: { elevation: 8 },
+      default: {},
+    }),
+  },
+  downloadBtnText: {
+    color: '#fff',
+    fontSize: 14.5,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  downloadHint: {
+    textAlign: 'center',
+    color: colors.textMuted,
+    fontSize: 11.5,
+    marginTop: 8,
+    fontWeight: '500',
+    paddingHorizontal: spacing.md,
+    lineHeight: 16,
+  },
 
   // Salary-not-set friendly state
   salaryMissingCard: {

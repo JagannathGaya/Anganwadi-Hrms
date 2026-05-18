@@ -146,6 +146,9 @@ const baseUrl = (): string => {
   return DEV_LAN_API_URL;
 };
 
+/** Exposed so screens can build full URLs (e.g. /payslip/print) for Linking. */
+export const getApiBaseUrl = (): string => baseUrl();
+
 // Tiny one-time log so it's obvious in Metro which URL the app is hitting.
 const _resolvedBaseUrl = baseUrl();
 console.log('[client] API base URL =', _resolvedBaseUrl, 'platform =', Platform.OS);
@@ -367,9 +370,17 @@ export interface PayslipDetail {
   expectedHours: number | string;
 
   regularPay: number | string;
+  /** Effective overtime — manualOvertimePay when set, else autoOvertimePay. */
   overtimePay: number | string;
+  /** What attendance produced. Always present. */
+  autoOvertimePay?: number | string;
+  /** Admin override of overtime; null when not set. */
+  manualOvertimePay?: number | string | null;
+  bonusAmount?: number | string;
+  bonusNote?: string | null;
   grossPay: number | string;
   deductions: number | string;
+  deductionNote?: string | null;
   netPay: number | string;
 
   monthlySalary: number | string;

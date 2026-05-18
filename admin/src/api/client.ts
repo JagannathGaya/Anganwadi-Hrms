@@ -119,6 +119,45 @@ export interface Payslip {
   paid: boolean;
   /** Admin activation gate. Until true, the employee cannot view the slip. */
   released: boolean;
+  /** Admin override flag. When true, attendance-based math is skipped. */
+  manualOverride: boolean;
+  generatedAt: string;
+}
+
+/** Enriched payslip view returned by GET /admin/payslips/{id}/detail */
+export interface PayslipDetail {
+  id: number;
+  employeeId: number;
+  month: string;
+  periodLabel: string;
+  totalHours: number | string;
+  regularHours: number | string;
+  overtimeHours: number | string;
+  expectedHours: number | string;
+  regularPay: number | string;
+  /** Effective overtime — manualOvertimePay when set, else autoOvertimePay. */
+  overtimePay: number | string;
+  /** Attendance-computed overtime. */
+  autoOvertimePay: number | string;
+  /** Admin override of overtime. null when not set. */
+  manualOvertimePay: number | string | null;
+  bonusAmount: number | string;
+  bonusNote: string | null;
+  grossPay: number | string;
+  deductions: number | string;
+  deductionNote: string | null;
+  netPay: number | string;
+  monthlySalary: number | string;
+  dailyRate: number | string;
+  hourlyRate: number | string;
+  daysInMonth: number;
+  daysWorked: number;
+  daysOnLeave: number;
+  daysHoliday: number;
+  daysAbsent: number;
+  averageDailyHours: number | string;
+  currency: string;
+  status: 'PAID' | 'PENDING';
   generatedAt: string;
 }
 

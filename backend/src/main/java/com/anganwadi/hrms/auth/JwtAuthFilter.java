@@ -21,6 +21,19 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
 
+    /**
+     * Endpoints that may accept the JWT in a `?token=` query parameter as a
+     * fallback. Needed for browser-launched downloads (mobile uses
+     * `Linking.openURL` to open the printable payslip page; browsers don't
+     * attach an Authorization header on that kind of navigation).
+     *
+     * Keep this list tight — every entry here is a place a token could end up
+     * in browser history, so only use it for personal, read-only resources.
+     */
+    private static final List<String> QUERY_TOKEN_ALLOWED_PATHS = List.of(
+            "/payslip/print"
+    );
+
     public JwtAuthFilter(JwtService jwtService) {
         this.jwtService = jwtService;
     }
@@ -29,9 +42,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
-        String header = request.getHeader("Authorization");
-        if (header != null && header.startsWith("Bearer ")) {
-            String token = header.substring(7);
+        String token = extractToken(request);
+        if (token != null) {
             try {
                 Claims claims = jwtService.parse(token);
                 Long employeeId = jwtService.subjectAsId(claims);
@@ -48,5 +60,21 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
         chain.doFilter(request, response);
+    }
+
+    private String extractToken(HttpServletRequest request) {
+        // 1. Standard: Authorization: Bearer <token>
+        String header = request.getHeader("Authorization");
+        if (header != null && header.startsWith("Bearer ")) {
+            return header.substring(7);
+        }
+        // 2. Browser-launched-download fallback: ?token=<token>, but only for
+        //    explicitly allow-listed paths.
+        String path = request.getRequestURI();
+        if (path != null && QUERY_TOKEN_ALLOWED_PATHS.contains(path)) {
+            String qp = request.getParameter("token");
+            if (qp != null && !qp.isBlank()) return qp;
+        }
+        return null;
     }
 }

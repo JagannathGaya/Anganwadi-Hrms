@@ -25,6 +25,7 @@ import {
 } from '../api/client';
 import { RootStackParamList } from '../navigation/types';
 import { colors, radius, shadow, spacing } from '../theme/tokens';
+import { fmtShiftRange } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
@@ -278,8 +279,29 @@ export default function HomeScreen({ navigation }: Props) {
             <View style={s.heroTop}>
               <View style={{ flex: 1 }}>
                 <Text style={s.heroEyebrow}>TODAY'S SHIFT</Text>
-                <Text style={s.heroClock}>{fmtClockHM(now)}</Text>
-                <Text style={s.heroCaption}>{workingSinceLabel}</Text>
+                {(() => {
+                  const shift = summary?.shift ?? me?.shift ?? null;
+                  if (shift?.startTime && shift?.endTime) {
+                    return (
+                      <>
+                        <Text style={s.heroShiftRange} numberOfLines={1} adjustsFontSizeToFit>
+                          {fmtShiftRange(shift.startTime, shift.endTime)}
+                        </Text>
+                        <Text style={s.heroCaption}>
+                          {shift.name ? `${shift.name}  ·  ` : ''}Now {fmtClockHM(now)}  ·  {workingSinceLabel}
+                        </Text>
+                      </>
+                    );
+                  }
+                  // No shift assigned — fall back to the live clock so the card
+                  // still has a strong headline.
+                  return (
+                    <>
+                      <Text style={s.heroClock}>{fmtClockHM(now)}</Text>
+                      <Text style={s.heroCaption}>No shift assigned  ·  {workingSinceLabel}</Text>
+                    </>
+                  );
+                })()}
               </View>
               <View style={{ alignItems: 'flex-end', gap: 8 }}>
                 <View style={[s.statusPill, statusPillStyle(status.tone as any)]}>
@@ -643,6 +665,11 @@ const s = StyleSheet.create({
   heroClock: {
     fontSize: 36, fontWeight: '800', color: '#fff',
     letterSpacing: -0.8, marginTop: 4, lineHeight: 38,
+    fontVariant: ['tabular-nums'],
+  },
+  heroShiftRange: {
+    fontSize: 24, fontWeight: '800', color: '#fff',
+    letterSpacing: -0.4, marginTop: 4, lineHeight: 28,
     fontVariant: ['tabular-nums'],
   },
   heroCaption: { fontSize: 12, color: 'rgba(255,255,255,0.78)', marginTop: 4 },
