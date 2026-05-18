@@ -1,0 +1,22 @@
+<resources>
+
+    <!-- Base application theme. -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <!-- Match the JS splash background so when MainActivity switches back to
+             AppTheme after the native splash, the background colour matches and
+             there is no white-on-white flash. -->
+        <item name="android:windowBackground">@color/splash_background</item>
+        <item name="android:statusBarColor">@color/splash_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+    <!-- Launch theme: used only for the instant between icon-tap and the JS
+         bundle being ready. After onCreate the MainActivity swaps to AppTheme. -->
+    <style name="LaunchTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_screen</item>
+        <item name="android:statusBarColor">@color/splash_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+</resources>

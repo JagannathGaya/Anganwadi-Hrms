@@ -2,9 +2,9 @@ spring:
   application:
     name: hrms-backend
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://host.docker.internal:5432/anganwadi_hrms}
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/anganwadi_hrms}
     username: ${DATABASE_USER:postgres}
-    password: ${DATABASE_PASSWORD:root}
+    password: ${DATABASE_PASSWORD:postgres}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -22,6 +22,17 @@ server:
   port: ${PORT:8080}
 
 app:
+  # Business timezone — drives "today" boundaries for attendance, payslips, etc.
+  # Override per environment if you operate outside India.
+  timezone: ${APP_TIMEZONE:Asia/Kolkata}
+  # Maximum length of a single open session. Anything beyond this is treated
+  # as "forgot to check out" and clamped when computing live hours so a stale
+  # session can't inflate a user's total.
+  attendance:
+    max-session-hours: ${MAX_SESSION_HOURS:16}
+    # Minutes after the shift start that still count as "on time". Beyond this
+    # the punctuality flag flips to LATE in the API response.
+    late-grace-minutes: ${LATE_GRACE_MINUTES:5}
   jwt:
     # 256-bit secret used to sign HS256 tokens. Override in any non-local env.
     secret: ${JWT_SECRET:dev-secret-change-me-please-32bytes-minimum-xx}

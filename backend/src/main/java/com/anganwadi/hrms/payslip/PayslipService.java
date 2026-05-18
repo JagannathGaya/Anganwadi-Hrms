@@ -2,6 +2,7 @@ package com.anganwadi.hrms.payslip;
 
 import com.anganwadi.hrms.attendance.Attendance;
 import com.anganwadi.hrms.attendance.AttendanceRepository;
+import com.anganwadi.hrms.common.ConflictException;
 import com.anganwadi.hrms.common.NotFoundException;
 import com.anganwadi.hrms.config_org.OrgConfigRepository;
 import com.anganwadi.hrms.employee.Employee;
@@ -11,13 +12,17 @@ import com.anganwadi.hrms.holiday.HolidayRepository;
 import com.anganwadi.hrms.leave_req.LeaveRepository;
 import com.anganwadi.hrms.leave_req.LeaveRequest;
 import com.anganwadi.hrms.leave_req.LeaveStatus;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.YearMonth;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -31,34 +36,46 @@ public class PayslipService {
     private final HolidayRepository holidays;
     private final LeaveRepository leaves;
     private final OrgConfigRepository orgRepo;
+    private final ZoneId zone;
 
     public PayslipService(EmployeeRepository employees,
                           AttendanceRepository attendances,
                           PayslipRepository payslips,
                           HolidayRepository holidays,
                           LeaveRepository leaves,
-                          OrgConfigRepository orgRepo) {
+                          OrgConfigRepository orgRepo,
+                          @Value("${app.timezone:Asia/Kolkata}") String tz) {
         this.employees = employees;
         this.attendances = attendances;
         this.payslips = payslips;
         this.holidays = holidays;
         this.leaves = leaves;
         this.orgRepo = orgRepo;
+        this.zone = ZoneId.of(tz);
     }
 
     /**
      * Returns the payslip for (employee, month) and re-computes it from
      * attendance entries, holidays, and approved leave records.
+     *
+     * Refuses to generate a slip when the employee has no monthly salary set
+     * (null or zero) — silently producing a ₹0 payslip would mislead the user.
+     * The 409 forces the admin/employee to fix the precondition first.
      */
     @Transactional
     public Payslip generateOrRefresh(Long employeeId, YearMonth month) {
         Employee employee = employees.findById(employeeId)
                 .orElseThrow(() -> new NotFoundException("employee not found"));
 
+        if (employee.getMonthlySalary() == null || employee.getMonthlySalary().signum() <= 0) {
+            throw new ConflictException(
+                    "Your monthly salary hasn't been set yet. Please contact your administrator to configure it before generating a payslip.");
+        }
+
         LocalDate monthStart = month.atDay(1);
         LocalDate monthEnd   = month.atEndOfMonth();
-        OffsetDateTime from = monthStart.atStartOfDay().atOffset(ZoneOffset.UTC);
-        OffsetDateTime to   = monthEnd.atTime(23, 59, 59).atOffset(ZoneOffset.UTC);
+        OffsetDateTime from  = monthStart.atStartOfDay(zone).toOffsetDateTime();
+        OffsetDateTime to    = monthEnd.plusDays(1).atStartOfDay(zone).minusSeconds(1).toOffsetDateTime();
 
         List<Attendance> entries = attendances
                 .findByEmployeeIdAndCheckInAtBetweenOrderByCheckInAtAsc(employeeId, from, to);
@@ -92,7 +109,193 @@ public class PayslipService {
         slip.setRegularPay(r.regularPay);
         slip.setOvertimePay(r.overtimePay);
         slip.setGrossPay(r.grossPay);
-        slip.setGeneratedAt(OffsetDateTime.now());
+        slip.setGeneratedAt(OffsetDateTime.now(zone));
+        return payslips.save(slip);
+    }
+
+    /**
+     * Enriched payslip — wraps the stored Payslip with the calendar breakdown
+     * (days worked / on leave / on holiday / absent), per-day/per-hour pay
+     * rates, deductions placeholder, and the human-readable period label.
+     *
+     * Refuses in three precondition cases (each a 409):
+     *   1. Requested month is the current month or later — payslips are only
+     *      available after the month has ended.
+     *   2. Employee has no monthly salary set yet.
+     *   3. Admin has not released the (existing) row yet.
+     */
+    @Transactional
+    public PayslipDetail generateDetail(Long employeeId, YearMonth month) {
+        Employee employee = employees.findById(employeeId)
+                .orElseThrow(() -> new NotFoundException("employee not found"));
+
+        YearMonth currentMonth = YearMonth.now(zone);
+        if (!month.isBefore(currentMonth)) {
+            // The month is the current one (still in progress) or in the future.
+            // Either way, no payslip yet — we'd be making one up.
+            YearMonth availableFrom = currentMonth.plusMonths(1);
+            throw new ConflictException(String.format(
+                    "Your payslip for %s will be available after the month ends. The current month is still in progress — check back on %s.",
+                    month, availableFrom.atDay(1)));
+        }
+
+        Payslip slip = generateOrRefresh(employeeId, month);
+        if (!slip.isReleased()) {
+            throw new ConflictException(
+                    "Your payslip for this month hasn't been activated by your administrator yet. " +
+                    "Please check back once it's released.");
+        }
+
+        LocalDate monthStart = month.atDay(1);
+        LocalDate monthEnd   = month.atEndOfMonth();
+        OffsetDateTime from  = monthStart.atStartOfDay(zone).toOffsetDateTime();
+        OffsetDateTime to    = monthEnd.plusDays(1).atStartOfDay(zone).minusSeconds(1).toOffsetDateTime();
+
+        List<Attendance> entries = attendances
+                .findByEmployeeIdAndCheckInAtBetweenOrderByCheckInAtAsc(employeeId, from, to);
+
+        // Calendar breakdown: holidays, leaves, worked days
+        Set<LocalDate> holidayDates = new HashSet<>();
+        for (Holiday h : holidays.findByDateBetweenOrderByDateAsc(monthStart, monthEnd)) {
+            holidayDates.add(h.getDate());
+        }
+        Set<LocalDate> leaveDates = new HashSet<>();
+        for (LeaveRequest lr : leaves
+                .findByEmployeeIdAndStatusAndFromDateLessThanEqualAndToDateGreaterThanEqual(
+                        employeeId, LeaveStatus.APPROVED, monthEnd, monthStart)) {
+            LocalDate s = lr.getFromDate().isBefore(monthStart) ? monthStart : lr.getFromDate();
+            LocalDate e = lr.getToDate().isAfter(monthEnd)      ? monthEnd   : lr.getToDate();
+            for (LocalDate d = s; !d.isAfter(e); d = d.plusDays(1)) leaveDates.add(d);
+        }
+
+        Set<LocalDate> workedDates = new HashSet<>();
+        for (Attendance a : entries) {
+            if (a.getCheckInAt() == null) continue;
+            LocalDate d = a.getCheckInAt().atZoneSameInstant(zone).toLocalDate();
+            // Only count as "worked" if there was real time logged.
+            if (a.getCheckOutAt() != null) {
+                long secs = Duration.between(a.getCheckInAt(), a.getCheckOutAt()).getSeconds();
+                if (secs > 0) workedDates.add(d);
+            }
+        }
+
+        int daysInMonth = month.lengthOfMonth();
+        int daysHoliday = holidayDates.size();
+        // Leave days that don't overlap holidays (no double-counting)
+        int daysOnLeave = 0;
+        for (LocalDate d : leaveDates) if (!holidayDates.contains(d)) daysOnLeave++;
+        // Worked days that aren't holidays/leaves
+        int daysWorked = 0;
+        for (LocalDate d : workedDates) {
+            if (!holidayDates.contains(d) && !leaveDates.contains(d)) daysWorked++;
+        }
+        int daysAbsent = Math.max(0, daysInMonth - daysHoliday - daysOnLeave - daysWorked);
+
+        BigDecimal dailyHours = orgRepo.getSingleton().getDailyHours();
+        BigDecimal expectedHours = dailyHours.multiply(BigDecimal.valueOf(daysInMonth))
+                .setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal monthlySalary = employee.getMonthlySalary() == null
+                ? BigDecimal.ZERO : employee.getMonthlySalary();
+        BigDecimal dailyRate = monthlySalary
+                .divide(BigDecimal.valueOf(daysInMonth), 2, RoundingMode.HALF_UP);
+        BigDecimal hourlyRate = dailyHours.signum() > 0
+                ? dailyRate.divide(dailyHours, 2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+
+        // Regular hours = totalHours - overtime portion (back-derive from overtimePay)
+        BigDecimal regularHours;
+        BigDecimal overtimeHours;
+        if (hourlyRate.signum() > 0 && slip.getOvertimePay() != null) {
+            overtimeHours = slip.getOvertimePay()
+                    .divide(hourlyRate.multiply(SalaryCalculator.OVERTIME_MULTIPLIER), 2, RoundingMode.HALF_UP);
+        } else {
+            overtimeHours = BigDecimal.ZERO;
+        }
+        regularHours = slip.getTotalHours().subtract(overtimeHours).max(BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal averageDailyHours = daysWorked > 0
+                ? slip.getTotalHours().divide(BigDecimal.valueOf(daysWorked), 2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+
+        // Deductions placeholder — zero today, structured here for future
+        // PF / tax / loan-recovery / advance lines without changing the contract.
+        BigDecimal deductions = BigDecimal.ZERO;
+        BigDecimal netPay = slip.getGrossPay().subtract(deductions).setScale(2, RoundingMode.HALF_UP);
+
+        String periodLabel = month.getMonth().getDisplayName(
+                java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH) + " " + month.getYear();
+        String currency = orgRepo.getSingleton().getCurrency();
+
+        return new PayslipDetail(
+                slip.getId(),
+                slip.getEmployeeId(),
+                slip.getMonth(),
+                periodLabel,
+                slip.getTotalHours(),
+                regularHours,
+                overtimeHours,
+                expectedHours,
+                slip.getRegularPay(),
+                slip.getOvertimePay(),
+                slip.getGrossPay(),
+                deductions,
+                netPay,
+                monthlySalary,
+                dailyRate,
+                hourlyRate,
+                daysInMonth,
+                daysWorked,
+                daysOnLeave,
+                daysHoliday,
+                daysAbsent,
+                averageDailyHours,
+                currency,
+                slip.isPaid() ? "PAID" : "PENDING",
+                slip.getGeneratedAt()
+        );
+    }
+
+    /**
+     * Admin override: complete the month with the FULL monthly salary,
+     * regardless of the employee's actual attendance hours. Useful when the
+     * employee is being paid in full (new hire, special circumstance, etc).
+     *
+     * The row is created if missing, populated with:
+     *   - totalHours    = dailyHours × daysInMonth (so the slip "looks right")
+     *   - regularPay    = monthlySalary
+     *   - overtimePay   = 0
+     *   - grossPay      = monthlySalary
+     *   - released      = true   (automatically released as part of this op)
+     */
+    @Transactional
+    public Payslip generateFullSalary(Long employeeId, YearMonth month) {
+        Employee employee = employees.findById(employeeId)
+                .orElseThrow(() -> new NotFoundException("employee not found"));
+        if (employee.getMonthlySalary() == null || employee.getMonthlySalary().signum() <= 0) {
+            throw new ConflictException(
+                    "Cannot complete with full salary — this employee has no monthly salary set.");
+        }
+        BigDecimal monthly = employee.getMonthlySalary();
+        BigDecimal dailyHours = orgRepo.getSingleton().getDailyHours();
+        BigDecimal totalHours = dailyHours.multiply(BigDecimal.valueOf(month.lengthOfMonth()))
+                .setScale(2, RoundingMode.HALF_UP);
+
+        String monthKey = month.toString();
+        Payslip slip = payslips.findByEmployeeIdAndMonth(employeeId, monthKey)
+                .orElseGet(() -> {
+                    Payslip p = new Payslip();
+                    p.setEmployeeId(employeeId);
+                    p.setMonth(monthKey);
+                    return p;
+                });
+        slip.setTotalHours(totalHours);
+        slip.setRegularPay(monthly.setScale(2, RoundingMode.HALF_UP));
+        slip.setOvertimePay(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        slip.setGrossPay(monthly.setScale(2, RoundingMode.HALF_UP));
+        slip.setGeneratedAt(OffsetDateTime.now(zone));
+        slip.setReleased(true);
         return payslips.save(slip);
     }
 
@@ -101,7 +304,41 @@ public class PayslipService {
         Payslip p = payslips.findById(payslipId)
                 .orElseThrow(() -> new NotFoundException("payslip not found"));
         p.setPaid(true);
+        // Paying implies releasing — paid slips should always be visible to
+        // the employee. Without this, an admin who marks paid before
+        // releasing would have a "paid but invisible" state.
+        p.setReleased(true);
         return payslips.save(p);
+    }
+
+    /**
+     * Admin operation: activate (or revoke activation of) a single payslip.
+     * After releasing, the employee can view it via /payslip.
+     */
+    @Transactional
+    public Payslip setReleased(Long payslipId, boolean released) {
+        Payslip p = payslips.findById(payslipId)
+                .orElseThrow(() -> new NotFoundException("payslip not found"));
+        p.setReleased(released);
+        return payslips.save(p);
+    }
+
+    /**
+     * Admin operation: release every existing payslip for a given month.
+     * Returns the count of rows updated.
+     */
+    @Transactional
+    public int releaseMonth(YearMonth month) {
+        List<Payslip> all = payslips.findByMonthOrderByEmployeeIdAsc(month.toString());
+        int updated = 0;
+        for (Payslip p : all) {
+            if (!p.isReleased()) {
+                p.setReleased(true);
+                updated++;
+            }
+        }
+        payslips.saveAll(all);
+        return updated;
     }
 
     public List<Payslip> listForMonth(String month) {

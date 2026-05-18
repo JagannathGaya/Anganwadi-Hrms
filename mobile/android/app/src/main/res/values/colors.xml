@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches the JS SplashScreen background (#fafbff). Keeping the two in
+         sync means the native → JS splash transition has no visible flash. -->
+    <color name="splash_background">#fafbff</color>
+    <color name="splash_brand">#4f46e5</color>
+</resources>

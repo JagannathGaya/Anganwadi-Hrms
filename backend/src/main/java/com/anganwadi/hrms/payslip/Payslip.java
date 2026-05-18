@@ -35,6 +35,14 @@ public class Payslip {
     @Column(nullable = false)
     private boolean paid = false;
 
+    /**
+     * Admin "activation" gate. Until this flips to true, employees see
+     * the row as still being prepared and cannot view their payslip.
+     * Defaults to false on new rows; backfilled to true for historical data.
+     */
+    @Column(nullable = false)
+    private boolean released = false;
+
     @Column(name = "generated_at", nullable = false)
     private OffsetDateTime generatedAt = OffsetDateTime.now();
 
@@ -61,6 +69,9 @@ public class Payslip {
 
     public boolean isPaid() { return paid; }
     public void setPaid(boolean paid) { this.paid = paid; }
+
+    public boolean isReleased() { return released; }
+    public void setReleased(boolean released) { this.released = released; }
 
     public OffsetDateTime getGeneratedAt() { return generatedAt; }
     public void setGeneratedAt(OffsetDateTime generatedAt) { this.generatedAt = generatedAt; }

@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+.env
+ios/Pods/
+ios/build/
+android/.gradle/
+android/build/
+android/app/build/
+*.log
+.metro-cache/
