@@ -1,0 +1,13 @@
+services:
+  dtcpicking-backend:
+    image: hrms-backend-backend:latest
+    container_name: hrms-backend
+    ports:
+      - "8080:8080"
+    environment:
+      JAVA_TOOL_OPTIONS: "-Doracle.jdbc.timezoneAsRegion=false"
+    volumes:
+      - ./logs:/app/logs
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
